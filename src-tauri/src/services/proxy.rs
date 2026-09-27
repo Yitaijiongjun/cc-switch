@@ -1870,6 +1870,7 @@ impl ProxyService {
                 log::warn!("codex Live 已被代理接管，不备份（避免把代理配置固化进备份槽）；下次 stop 会从 SSOT 重建 Live");
             } else {
                 self.strip_current_official_codex_auth_from_backup(&mut config)?;
+                Self::strip_toml_mcp_servers_from_settings(&mut config)?;
                 let json_str = serde_json::to_string(&config)
                     .map_err(|e| format!("序列化 Codex 配置失败: {e}"))?;
                 self.db
@@ -1894,10 +1895,11 @@ impl ProxyService {
         }
 
         // Grok Build
-        if let Ok(config) = self.read_grok_live() {
+        if let Ok(mut config) = self.read_grok_live() {
             if Self::live_has_proxy_placeholder_for_app(&AppType::GrokBuild, &config) {
                 log::warn!("grokbuild Live 已被代理接管，不备份；下次 stop 会从 SSOT 重建 Live");
             } else {
+                Self::strip_toml_mcp_servers_from_settings(&mut config)?;
                 let json_str = serde_json::to_string(&config)
                     .map_err(|e| format!("序列化 Grok Build 配置失败: {e}"))?;
                 self.db
@@ -1932,6 +1934,9 @@ impl ProxyService {
 
         if matches!(app_type, AppType::Codex) {
             self.strip_current_official_codex_auth_from_backup(&mut config)?;
+        }
+        if matches!(app_type, AppType::Codex | AppType::GrokBuild) {
+            Self::strip_toml_mcp_servers_from_settings(&mut config)?;
         }
 
         let json_str = serde_json::to_string(&config)
@@ -2249,7 +2254,7 @@ impl ProxyService {
                 if let Ok(Some(backup)) = self.db.get_live_backup("codex").await {
                     let config: Value = serde_json::from_str(&backup.original_config)
                         .map_err(|e| format!("解析 Codex 备份失败: {e}"))?;
-                    self.write_codex_restore_backup(&config)?;
+                    self.write_live_config_for_app(app_type, &config)?;
                     log::info!("Codex Live 配置已恢复");
                 }
             }
@@ -2265,7 +2270,7 @@ impl ProxyService {
                 if let Ok(Some(backup)) = self.db.get_live_backup("grokbuild").await {
                     let config: Value = serde_json::from_str(&backup.original_config)
                         .map_err(|e| format!("解析 Grok Build 备份失败: {e}"))?;
-                    self.write_grok_live(&config)?;
+                    self.write_live_config_for_app(app_type, &config)?;
                     log::info!("Grok Build Live 配置已恢复");
                 }
             }
@@ -2371,9 +2376,25 @@ impl ProxyService {
     fn write_live_config_for_app(&self, app_type: &AppType, config: &Value) -> Result<(), String> {
         match app_type {
             AppType::Claude => self.write_claude_live(config),
-            AppType::Codex => self.write_codex_restore_backup(config),
+            AppType::Codex => {
+                let mut restored = config.clone();
+                if let Ok(live) = self.read_codex_live() {
+                    Self::preserve_toml_mcp_servers_from_existing_config(&mut restored, &live)?;
+                } else {
+                    Self::strip_toml_mcp_servers_from_settings(&mut restored)?;
+                }
+                self.write_codex_restore_backup(&restored)
+            }
             AppType::Gemini => self.write_gemini_live(config),
-            AppType::GrokBuild => self.write_grok_live(config),
+            AppType::GrokBuild => {
+                let mut restored = config.clone();
+                if let Ok(live) = self.read_grok_live() {
+                    Self::preserve_toml_mcp_servers_from_existing_config(&mut restored, &live)?;
+                } else {
+                    Self::strip_toml_mcp_servers_from_settings(&mut restored)?;
+                }
+                self.write_grok_live(&restored)
+            }
             _ => Err("该应用不支持代理功能".to_string()),
         }
     }
@@ -2864,10 +2885,6 @@ impl ProxyService {
                 existing_backup_value.or_else(|| self.read_codex_live().ok());
 
             if let Some(existing_value) = existing_backup_value.as_ref() {
-                Self::preserve_toml_mcp_servers_from_existing_config(
-                    &mut effective_settings,
-                    existing_value,
-                )?;
                 if let Some(account_id) = clear_codex_auth_for_account {
                     Self::clear_codex_auth_in_backup(
                         &mut effective_settings,
@@ -2887,6 +2904,8 @@ impl ProxyService {
                     )?;
                 }
             }
+
+            Self::strip_toml_mcp_servers_from_settings(&mut effective_settings)?;
 
             // 统一会话开关：备份是接管释放时恢复 live 的来源，官方配置的
             // 共享 custom 路由注入必须落在备份里，否则恢复后开关失效。
@@ -2911,23 +2930,7 @@ impl ProxyService {
         }
 
         if matches!(app_type_enum, AppType::GrokBuild) {
-            let existing_value = self
-                .db
-                .get_live_backup(app_type)
-                .await
-                .map_err(|e| format!("读取 {app_type} 现有备份失败: {e}"))?
-                .map(|backup| {
-                    serde_json::from_str::<Value>(&backup.original_config)
-                        .map_err(|e| format!("解析 {app_type} 现有备份失败: {e}"))
-                })
-                .transpose()?
-                .or_else(|| self.read_grok_live().ok());
-            if let Some(existing_value) = existing_value.as_ref() {
-                Self::preserve_toml_mcp_servers_from_existing_config(
-                    &mut effective_settings,
-                    existing_value,
-                )?;
-            }
+            Self::strip_toml_mcp_servers_from_settings(&mut effective_settings)?;
         }
 
         let backup_json = match app_type_enum {
@@ -3216,14 +3219,43 @@ impl ProxyService {
         self.switch_locks.lock_for_app(app_type).await
     }
 
+    fn strip_toml_mcp_servers_from_settings(settings: &mut Value) -> Result<(), String> {
+        let obj = settings
+            .as_object_mut()
+            .ok_or_else(|| "TOML 应用配置必须是 JSON 对象".to_string())?;
+        let config = obj.get("config").and_then(|v| v.as_str()).unwrap_or("");
+        if config.trim().is_empty() {
+            return Ok(());
+        }
+
+        let mut doc = config
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| format!("解析 config.toml 失败: {e}"))?;
+        doc.as_table_mut().remove("mcp_servers");
+        if let Some(mcp_tbl) = doc
+            .get_mut("mcp")
+            .and_then(|item| item.as_table_like_mut())
+        {
+            mcp_tbl.remove("servers");
+            if mcp_tbl.is_empty() {
+                doc.as_table_mut().remove("mcp");
+            }
+        }
+        obj.insert("config".to_string(), json!(doc.to_string()));
+        Ok(())
+    }
+
     fn preserve_toml_mcp_servers_from_existing_config(
         target_settings: &mut Value,
         existing_config: &Value,
     ) -> Result<(), String> {
+        // Provider snapshots and DB backups are never authoritative for MCP.
+        // Drop any stale MCP from the target before copying the current live state.
+        Self::strip_toml_mcp_servers_from_settings(target_settings)?;
+
         let target_obj = target_settings
             .as_object_mut()
-            .ok_or_else(|| "TOML 应用备份必须是 JSON 对象".to_string())?;
-
+            .ok_or_else(|| "TOML 应用配置必须是 JSON 对象".to_string())?;
         let target_config = target_obj
             .get("config")
             .and_then(|v| v.as_str())
@@ -3240,35 +3272,20 @@ impl ProxyService {
             .get("config")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if existing_config.trim().is_empty() {
-            target_obj.insert("config".to_string(), json!(target_doc.to_string()));
-            return Ok(());
-        }
+        if !existing_config.trim().is_empty() {
+            let existing_doc = existing_config
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(|e| format!("解析现有 config.toml 失败: {e}"))?;
 
-        let existing_doc = existing_config
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|e| format!("解析现有 config.toml 备份失败: {e}"))?;
-
-        if let Some(existing_mcp_servers) = existing_doc.get("mcp_servers") {
-            match target_doc.get_mut("mcp_servers") {
-                Some(target_mcp_servers) => {
-                    if let (Some(target_table), Some(existing_table)) = (
-                        target_mcp_servers.as_table_like_mut(),
-                        existing_mcp_servers.as_table_like(),
-                    ) {
-                        for (server_id, server_item) in existing_table.iter() {
-                            if target_table.get(server_id).is_none() {
-                                target_table.insert(server_id, server_item.clone());
-                            }
-                        }
-                    } else {
-                        log::warn!(
-                            "config.toml contains a non-table mcp_servers section; skipping MCP merge"
-                        );
-                    }
-                }
-                None => {
-                    target_doc["mcp_servers"] = existing_mcp_servers.clone();
+            if let Some(existing_mcp_servers) = existing_doc.get("mcp_servers").cloned() {
+                target_doc["mcp_servers"] = existing_mcp_servers;
+            }
+            if let Some(existing_mcp) = existing_doc.get("mcp").cloned() {
+                if existing_mcp
+                    .as_table_like()
+                    .is_some_and(|table| table.contains_key("servers"))
+                {
+                    target_doc["mcp"] = existing_mcp;
                 }
             }
         }
@@ -10693,7 +10710,7 @@ experimental_bearer_token = "PROXY_MANAGED"
         assert!(backup["config"]
             .as_str()
             .is_some_and(|config| config.contains("https://b.example.com/v1")));
-        assert!(backup["config"]
+        assert!(!backup["config"]
             .as_str()
             .is_some_and(|config| config.contains("[mcp_servers.demo]")));
     }
