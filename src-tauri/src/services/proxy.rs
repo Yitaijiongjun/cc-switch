@@ -2252,8 +2252,9 @@ impl ProxyService {
             }
             AppType::Codex => {
                 if let Ok(Some(backup)) = self.db.get_live_backup("codex").await {
-                    let config: Value = serde_json::from_str(&backup.original_config)
+                    let mut config: Value = serde_json::from_str(&backup.original_config)
                         .map_err(|e| format!("解析 Codex 备份失败: {e}"))?;
+                    self.preserve_current_live_toml_mcp_for_restore(app_type, &mut config)?;
                     self.write_live_config_for_app(app_type, &config)?;
                     log::info!("Codex Live 配置已恢复");
                 }
@@ -2268,8 +2269,9 @@ impl ProxyService {
             }
             AppType::GrokBuild => {
                 if let Ok(Some(backup)) = self.db.get_live_backup("grokbuild").await {
-                    let config: Value = serde_json::from_str(&backup.original_config)
+                    let mut config: Value = serde_json::from_str(&backup.original_config)
                         .map_err(|e| format!("解析 Grok Build 备份失败: {e}"))?;
+                    self.preserve_current_live_toml_mcp_for_restore(app_type, &mut config)?;
                     self.write_live_config_for_app(app_type, &config)?;
                     log::info!("Grok Build Live 配置已恢复");
                 }
@@ -2327,7 +2329,7 @@ impl ProxyService {
             .await
             .map_err(|e| format!("获取 {app_type_str} Live 备份失败: {e}"))?;
         if let Some(backup) = backup {
-            let config: Value = serde_json::from_str(&backup.original_config)
+            let mut config: Value = serde_json::from_str(&backup.original_config)
                 .map_err(|e| format!("解析 {app_type_str} 备份失败: {e}"))?;
 
             // 备份若是代理占位符（异常历史：上次 stop 失败导致 Live 留在了代理状态，
@@ -2338,6 +2340,7 @@ impl ProxyService {
                     "{app_type_str} 备份本身已是代理占位符（异常历史状态），跳过备份，改走 SSOT 重建 Live"
                 );
             } else {
+                self.preserve_current_live_toml_mcp_for_restore(app_type, &mut config)?;
                 self.write_live_config_for_app(app_type, &config)?;
                 log::info!("{app_type_str} Live 配置已从备份恢复");
                 return Ok(());
@@ -3289,6 +3292,34 @@ impl ProxyService {
 
         target_obj.insert("config".to_string(), json!(target_doc.to_string()));
         Ok(())
+    }
+
+    fn preserve_current_live_toml_mcp_for_restore(
+        &self,
+        app_type: &AppType,
+        target_settings: &mut Value,
+    ) -> Result<(), String> {
+        let existing_live = match app_type {
+            AppType::Codex => self.read_codex_live(),
+            AppType::GrokBuild => self.read_grok_live(),
+            _ => return Ok(()),
+        };
+
+        match existing_live {
+            Ok(existing_live) => {
+                Self::preserve_toml_mcp_servers_from_existing_config(
+                    target_settings,
+                    &existing_live,
+                )
+            }
+            Err(error) => {
+                log::warn!(
+                    "恢复 {} Live 前无法读取当前 MCP 状态，将仅恢复非 MCP 配置: {error}",
+                    app_type.as_str()
+                );
+                Ok(())
+            }
+        }
     }
 
     fn clear_codex_auth_in_backup(
