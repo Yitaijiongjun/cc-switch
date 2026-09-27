@@ -18,6 +18,10 @@ impl McpService {
         Self::BUILTIN_MANAGEMENT_DISABLED
     }
 
+    pub fn purge_managed_state(state: &AppState) -> Result<usize, AppError> {
+        state.db.clear_mcp_servers()
+    }
+
     pub fn get_all_servers(_state: &AppState) -> Result<IndexMap<String, McpServer>, AppError> {
         Ok(IndexMap::new())
     }
