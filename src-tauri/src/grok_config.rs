@@ -386,9 +386,9 @@ fn preserve_external_grok_mcp(config: &str) -> Result<String, AppError> {
     if path.exists() {
         let live_text = fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
         if live_text.contains("mcp") {
-            let live = live_text
-                .parse::<DocumentMut>()
-                .map_err(|e| AppError::Message(format!("Invalid live Grok Build config.toml: {e}")))?;
+            let live = live_text.parse::<DocumentMut>().map_err(|e| {
+                AppError::Message(format!("Invalid live Grok Build config.toml: {e}"))
+            })?;
 
             if let Some(item) = live.get("mcp_servers").cloned() {
                 next.as_table_mut().insert("mcp_servers", item);
