@@ -1055,10 +1055,7 @@ fn strip_injected_kimi_for_coding_context_defaults(settings: &mut Value, provide
 }
 
 fn strip_gemini_mcp_from_provider_settings(settings: &mut Value) {
-    if let Some(config) = settings
-        .get_mut("config")
-        .and_then(Value::as_object_mut)
-    {
+    if let Some(config) = settings.get_mut("config").and_then(Value::as_object_mut) {
         config.remove("mcpServers");
         config.remove("mcp_servers");
     }
