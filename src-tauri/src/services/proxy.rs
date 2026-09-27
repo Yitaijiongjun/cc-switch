@@ -3232,10 +3232,7 @@ impl ProxyService {
             .parse::<toml_edit::DocumentMut>()
             .map_err(|e| format!("解析 config.toml 失败: {e}"))?;
         doc.as_table_mut().remove("mcp_servers");
-        if let Some(mcp_tbl) = doc
-            .get_mut("mcp")
-            .and_then(|item| item.as_table_like_mut())
-        {
+        if let Some(mcp_tbl) = doc.get_mut("mcp").and_then(|item| item.as_table_like_mut()) {
             mcp_tbl.remove("servers");
             if mcp_tbl.is_empty() {
                 doc.as_table_mut().remove("mcp");
