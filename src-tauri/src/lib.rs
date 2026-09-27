@@ -940,7 +940,9 @@ pub fn run() {
             }
 
             // 3. 导入 MCP 服务器配置（表空时触发）
-            if app_state.db.is_mcp_table_empty().unwrap_or(false) {
+            if !McpService::is_builtin_management_disabled()
+                && app_state.db.is_mcp_table_empty().unwrap_or(false)
+            {
                 log::info!("MCP table empty, importing from live configurations...");
 
                 match crate::services::mcp::McpService::import_from_claude(&app_state) {
