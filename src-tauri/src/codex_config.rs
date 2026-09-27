@@ -2710,6 +2710,63 @@ pub fn prepare_codex_live_config_text_with_optional_catalog(
     }
 }
 
+fn preserve_external_codex_mcp(config_text: Option<&str>) -> Result<Option<String>, AppError> {
+    let had_input = config_text.is_some();
+    let mut next = config_text
+        .unwrap_or("")
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+
+    // Never trust provider snapshots for MCP state. Old snapshots may still
+    // contain projected servers from before MCP management was disabled.
+    let mut changed = next.as_table_mut().remove("mcp_servers").is_some();
+    if let Some(mcp_tbl) = next
+        .get_mut("mcp")
+        .and_then(|item| item.as_table_like_mut())
+    {
+        if mcp_tbl.remove("servers").is_some() {
+            changed = true;
+        }
+        if mcp_tbl.is_empty() {
+            next.as_table_mut().remove("mcp");
+        }
+    }
+
+    // MCP belongs to Codex itself in this fork. Preserve the current live
+    // sections byte-semantically through provider switches instead of
+    // reconstructing them from CC Switch's database.
+    let path = get_codex_config_path();
+    let mut copied_live_mcp = false;
+    if path.exists() {
+        let live_text = fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
+        if live_text.contains("mcp") {
+            let live = live_text
+                .parse::<DocumentMut>()
+                .map_err(|e| AppError::Message(format!("Invalid live Codex config.toml: {e}")))?;
+
+            if let Some(item) = live.get("mcp_servers").cloned() {
+                next.as_table_mut().insert("mcp_servers", item);
+                copied_live_mcp = true;
+            }
+            if let Some(item) = live.get("mcp").cloned() {
+                if item
+                    .as_table_like()
+                    .is_some_and(|table| table.contains_key("servers"))
+                {
+                    next.as_table_mut().insert("mcp", item);
+                    copied_live_mcp = true;
+                }
+            }
+        }
+    }
+
+    if had_input || changed || copied_live_mcp {
+        Ok(Some(next.to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
 pub fn write_codex_provider_live_with_catalog(
     settings: &Value,
     category: Option<&str>,
@@ -2720,6 +2777,7 @@ pub fn write_codex_provider_live_with_catalog(
     let prepared_config = config_text
         .map(|text| prepare_codex_config_text_with_model_catalog(settings, text, profile))
         .transpose()?;
+    let prepared_config = preserve_external_codex_mcp(prepared_config.as_deref())?;
 
     write_codex_live_for_provider(category, auth, prepared_config.as_deref())
 }
