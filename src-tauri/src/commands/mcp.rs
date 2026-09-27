@@ -14,31 +14,38 @@ use crate::store::AppState;
 /// 获取 Claude MCP 状态
 #[tauri::command]
 pub async fn get_claude_mcp_status() -> Result<claude_mcp::McpStatus, String> {
-    claude_mcp::get_mcp_status().map_err(|e| e.to_string())
+    Ok(claude_mcp::McpStatus {
+        user_config_path: String::new(),
+        user_config_exists: false,
+        server_count: 0,
+    })
 }
 
 /// 读取 mcp.json 文本内容
 #[tauri::command]
 pub async fn read_claude_mcp_config() -> Result<Option<String>, String> {
-    claude_mcp::read_mcp_json().map_err(|e| e.to_string())
+    Ok(None)
 }
 
 /// 新增或更新一个 MCP 服务器条目
 #[tauri::command]
-pub async fn upsert_claude_mcp_server(id: String, spec: serde_json::Value) -> Result<bool, String> {
-    claude_mcp::upsert_mcp_server(&id, spec).map_err(|e| e.to_string())
+pub async fn upsert_claude_mcp_server(
+    _id: String,
+    _spec: serde_json::Value,
+) -> Result<bool, String> {
+    Ok(false)
 }
 
 /// 删除一个 MCP 服务器条目
 #[tauri::command]
-pub async fn delete_claude_mcp_server(id: String) -> Result<bool, String> {
-    claude_mcp::delete_mcp_server(&id).map_err(|e| e.to_string())
+pub async fn delete_claude_mcp_server(_id: String) -> Result<bool, String> {
+    Ok(false)
 }
 
 /// 校验命令是否在 PATH 中可用（不执行）
 #[tauri::command]
-pub async fn validate_mcp_command(cmd: String) -> Result<bool, String> {
-    claude_mcp::validate_command_in_path(&cmd).map_err(|e| e.to_string())
+pub async fn validate_mcp_command(_cmd: String) -> Result<bool, String> {
+    Ok(false)
 }
 
 #[derive(Serialize)]
