@@ -155,6 +155,16 @@ impl Database {
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
     }
+
+    /// Clear all legacy MCP state owned by CC Switch.
+    ///
+    /// The MCP-disabled fork calls this during startup so stale rows from an
+    /// older build can never become a future injection source.
+    pub fn clear_mcp_servers(&self) -> Result<usize, AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute("DELETE FROM mcp_servers", [])
+            .map_err(|e| AppError::Database(e.to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -240,6 +250,17 @@ mod tests {
         assert!(stored.apps.claude);
         assert!(stored.apps.codex);
         assert!(stored.apps.gemini);
+    }
+
+    #[test]
+    fn clear_mcp_servers_removes_all_managed_state() {
+        let db = Database::memory().expect("create memory db");
+        db.save_mcp_server(&test_server()).expect("seed server");
+        assert_eq!(db.get_all_mcp_servers().expect("read servers").len(), 1);
+
+        let deleted = db.clear_mcp_servers().expect("clear MCP servers");
+        assert_eq!(deleted, 1);
+        assert!(db.get_all_mcp_servers().expect("read servers").is_empty());
     }
 
     #[test]
