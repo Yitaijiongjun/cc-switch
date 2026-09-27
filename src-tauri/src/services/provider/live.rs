@@ -1054,6 +1054,16 @@ fn strip_injected_kimi_for_coding_context_defaults(settings: &mut Value, provide
     }
 }
 
+fn strip_gemini_mcp_from_provider_settings(settings: &mut Value) {
+    if let Some(config) = settings
+        .get_mut("config")
+        .and_then(Value::as_object_mut)
+    {
+        config.remove("mcpServers");
+        config.remove("mcp_servers");
+    }
+}
+
 fn restore_live_settings_for_provider_backfill(
     app_type: &AppType,
     provider: &Provider,
@@ -1063,6 +1073,11 @@ fn restore_live_settings_for_provider_backfill(
         let mut settings = live_settings;
         strip_injected_codex_oauth_context_defaults(&mut settings, provider);
         strip_injected_kimi_for_coding_context_defaults(&mut settings, provider);
+        return settings;
+    }
+    if matches!(app_type, AppType::Gemini) {
+        let mut settings = live_settings;
+        strip_gemini_mcp_from_provider_settings(&mut settings);
         return settings;
     }
     if matches!(app_type, AppType::GrokBuild) {
@@ -1953,13 +1968,17 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
 
             // Read settings.json file (MCP config etc.)
             let settings_path = get_gemini_settings_path();
-            let config_obj = if settings_path.exists() {
+            let mut config_obj = if settings_path.exists() {
                 read_json_file(&settings_path)?
             } else {
                 json!({})
             };
+            if let Some(config) = config_obj.as_object_mut() {
+                config.remove("mcpServers");
+                config.remove("mcp_servers");
+            }
 
-            // Return complete structure: { "env": {...}, "config": {...} }
+            // Provider snapshots must not persist MCP state.
             json!({
                 "env": env_obj,
                 "config": config_obj
@@ -2076,6 +2095,9 @@ pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
                 (merged.as_object_mut(), config_value.as_object())
             {
                 for (k, v) in config_obj {
+                    if matches!(k.as_str(), "mcpServers" | "mcp_servers") {
+                        continue;
+                    }
                     merged_obj.insert(k.clone(), v.clone());
                 }
             }
