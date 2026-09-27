@@ -939,10 +939,17 @@ pub fn run() {
                 }
             }
 
-            // 3. 导入 MCP 服务器配置（表空时触发）
-            if !McpService::is_builtin_management_disabled()
-                && app_state.db.is_mcp_table_empty().unwrap_or(false)
-            {
+            // 3. MCP-disabled fork: purge legacy managed state instead of
+            // discovering or importing MCP from any client configuration.
+            if McpService::is_builtin_management_disabled() {
+                match McpService::purge_managed_state(&app_state) {
+                    Ok(count) if count > 0 => {
+                        log::info!("Purged {count} legacy CC Switch MCP server record(s)");
+                    }
+                    Ok(_) => {}
+                    Err(e) => log::warn!("Failed to purge legacy MCP state: {e}"),
+                }
+            } else if app_state.db.is_mcp_table_empty().unwrap_or(false) {
                 log::info!("MCP table empty, importing from live configurations...");
 
                 match crate::services::mcp::McpService::import_from_claude(&app_state) {
