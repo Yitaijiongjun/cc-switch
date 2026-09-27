@@ -1911,7 +1911,11 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
     }
 
     let settings_config = match app_type {
-        AppType::Codex => crate::codex_config::read_codex_live_settings()?,
+        AppType::Codex => {
+            let mut settings = crate::codex_config::read_codex_live_settings()?;
+            crate::codex_config::strip_codex_mcp_servers_from_settings(&mut settings)?;
+            settings
+        }
         AppType::GrokBuild => {
             let mut settings = crate::grok_config::read_grok_live_settings()?;
             let config = settings
