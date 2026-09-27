@@ -1,0 +1,25 @@
+name: ChatGPT Capability Demo
+
+on:
+  push:
+    branches:
+      - chatgpt-capability-demo-20260927
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate demo artifact
+        run: |
+          mkdir -p out
+          echo "ChatGPT GitHub Actions demo succeeded." > out/chatgpt-demo.txt
+          echo "Commit: $GITHUB_SHA" >> out/chatgpt-demo.txt
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-demo-artifact
+          path: out/chatgpt-demo.txt
