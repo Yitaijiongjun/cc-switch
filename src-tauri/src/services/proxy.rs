@@ -3306,12 +3306,10 @@ impl ProxyService {
         };
 
         match existing_live {
-            Ok(existing_live) => {
-                Self::preserve_toml_mcp_servers_from_existing_config(
-                    target_settings,
-                    &existing_live,
-                )
-            }
+            Ok(existing_live) => Self::preserve_toml_mcp_servers_from_existing_config(
+                target_settings,
+                &existing_live,
+            ),
             Err(error) => {
                 log::warn!(
                     "恢复 {} Live 前无法读取当前 MCP 状态，将仅恢复非 MCP 配置: {error}",
@@ -9106,11 +9104,8 @@ command = "latest-command"
         let db = Arc::new(Database::memory().expect("init db"));
         let state = crate::store::AppState::new(db.clone());
 
-        db.set_config_snippet(
-            "codex",
-            Some("model_verbosity = \"high\"\n".to_string()),
-        )
-        .expect("set common config snippet");
+        db.set_config_snippet("codex", Some("model_verbosity = \"high\"\n".to_string()))
+            .expect("set common config snippet");
 
         let proxy_config = ProxyConfig {
             listen_port: 0,
