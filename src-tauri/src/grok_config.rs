@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
+use toml_edit::DocumentMut;
 
 use crate::config::{get_home_dir, write_text_file};
 use crate::error::AppError;
@@ -363,6 +364,49 @@ pub fn read_grok_live_settings() -> Result<Value, AppError> {
     Ok(json!({ "config": config }))
 }
 
+fn preserve_external_grok_mcp(config: &str) -> Result<String, AppError> {
+    let mut next = config
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Grok Build config.toml: {e}")))?;
+
+    // Provider snapshots must never own MCP state in this fork.
+    next.as_table_mut().remove("mcp_servers");
+    if let Some(mcp_tbl) = next
+        .get_mut("mcp")
+        .and_then(|item| item.as_table_like_mut())
+    {
+        mcp_tbl.remove("servers");
+        if mcp_tbl.is_empty() {
+            next.as_table_mut().remove("mcp");
+        }
+    }
+
+    // Preserve whatever the Grok CLI currently owns in its live config.
+    let path = get_grok_config_path();
+    if path.exists() {
+        let live_text = fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
+        if live_text.contains("mcp") {
+            let live = live_text
+                .parse::<DocumentMut>()
+                .map_err(|e| AppError::Message(format!("Invalid live Grok Build config.toml: {e}")))?;
+
+            if let Some(item) = live.get("mcp_servers").cloned() {
+                next.as_table_mut().insert("mcp_servers", item);
+            }
+            if let Some(item) = live.get("mcp").cloned() {
+                if item
+                    .as_table_like()
+                    .is_some_and(|table| table.contains_key("servers"))
+                {
+                    next.as_table_mut().insert("mcp", item);
+                }
+            }
+        }
+    }
+
+    Ok(next.to_string())
+}
+
 pub fn write_grok_provider_live(provider: &Provider) -> Result<(), AppError> {
     let settings = provider.settings_config.as_object().ok_or_else(|| {
         AppError::localized(
@@ -389,6 +433,7 @@ pub fn write_grok_provider_live(provider: &Provider) -> Result<(), AppError> {
         validate_config_toml(config)?;
     }
 
+    let config = preserve_external_grok_mcp(config)?;
     write_grok_live_settings(&json!({ "config": config }))
 }
 
