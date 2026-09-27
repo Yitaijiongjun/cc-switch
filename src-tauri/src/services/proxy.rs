@@ -8598,7 +8598,7 @@ wire_api = "responses"
 
     #[tokio::test]
     #[serial]
-    async fn update_live_backup_from_provider_preserves_codex_mcp_servers() {
+    async fn update_live_backup_from_provider_drops_codex_mcp_servers() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
 
@@ -8662,12 +8662,72 @@ base_url = "https://new.example/v1"
             .expect("config string");
 
         assert!(
-            config.contains("[mcp_servers.echo]"),
-            "existing Codex MCP section should survive proxy hot-switch backup update"
+            !config.contains("mcp_servers"),
+            "CC Switch proxy backups must not persist Codex MCP state"
         );
         assert!(
             config.contains("https://new.example/v1"),
             "provider-specific base_url should still update to the new provider"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn restore_codex_backup_preserves_current_live_mcp_without_persisting_it() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        crate::codex_config::write_codex_live_atomic(
+            &json!({ "OPENAI_API_KEY": "live-token" }),
+            Some(
+                r#"model_provider = "taken-over"
+
+[mcp_servers.echo]
+command = "echo-server"
+"#,
+            ),
+        )
+        .expect("seed live Codex MCP");
+
+        db.save_live_backup(
+            "codex",
+            &serde_json::to_string(&json!({
+                "auth": { "OPENAI_API_KEY": "restored-token" },
+                "config": "model_provider = \"restored\"\n"
+            }))
+            .expect("serialize MCP-free backup"),
+        )
+        .await
+        .expect("save MCP-free backup");
+
+        service
+            .restore_live_config_for_app_inner(&AppType::Codex)
+            .await
+            .expect("restore Codex backup");
+
+        let live = service.read_codex_live().expect("read restored Codex live");
+        let config = live
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("restored config string");
+        assert!(config.contains("model_provider = \"restored\""));
+        assert!(
+            config.contains("[mcp_servers.echo]"),
+            "current live MCP must survive a proxy restore"
+        );
+        assert!(config.contains("command = \"echo-server\""));
+
+        let backup = db
+            .get_live_backup("codex")
+            .await
+            .expect("read backup")
+            .expect("backup exists");
+        assert!(
+            !backup.original_config.contains("mcp_servers"),
+            "persistent proxy backup must remain MCP-free"
         );
     }
 
@@ -8971,7 +9031,7 @@ requires_openai_auth = true
 
     #[tokio::test]
     #[serial]
-    async fn update_live_backup_from_provider_keeps_new_codex_mcp_entries_on_conflict() {
+    async fn update_live_backup_from_provider_strips_all_codex_mcp_sources() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");
 
@@ -9029,34 +9089,10 @@ command = "latest-command"
             .get("config")
             .and_then(|v| v.as_str())
             .expect("config string");
-        let parsed: toml::Value = toml::from_str(config).expect("parse merged codex config");
-
-        let mcp_servers = parsed
-            .get("mcp_servers")
-            .expect("mcp_servers should be present");
-        assert_eq!(
-            mcp_servers
-                .get("shared")
-                .and_then(|v| v.get("command"))
-                .and_then(|v| v.as_str()),
-            Some("new-command"),
-            "new provider/common-config MCP definition should win on conflict"
-        );
-        assert_eq!(
-            mcp_servers
-                .get("legacy")
-                .and_then(|v| v.get("command"))
-                .and_then(|v| v.as_str()),
-            Some("legacy-command"),
-            "backup-only MCP entries should still be preserved"
-        );
-        assert_eq!(
-            mcp_servers
-                .get("latest")
-                .and_then(|v| v.get("command"))
-                .and_then(|v| v.as_str()),
-            Some("latest-command"),
-            "new MCP entries should remain in the restore backup"
+        let parsed: toml::Value = toml::from_str(config).expect("parse Codex config");
+        assert!(
+            parsed.get("mcp_servers").is_none(),
+            "provider snapshots and old backups must not persist MCP servers"
         );
     }
 
@@ -9072,12 +9108,7 @@ command = "latest-command"
 
         db.set_config_snippet(
             "codex",
-            Some(
-                r#"[mcp_servers.shared]
-command = "shared-command"
-"#
-                .to_string(),
-            ),
+            Some("model_verbosity = \"high\"\n".to_string()),
         )
         .expect("set common config snippet");
 
@@ -9202,12 +9233,12 @@ requires_openai_auth = true
             "config.toml must reference model_catalog_json after switch"
         );
         assert!(
-            config_text.contains("[mcp_servers.shared]"),
-            "config.toml must keep common config after switch"
+            config_text.contains(r#"model_verbosity = "high""#),
+            "config.toml must keep non-MCP common config after switch"
         );
         assert!(
-            config_text.contains(r#"command = "shared-command""#),
-            "config.toml must include common config content after switch"
+            !config_text.contains("mcp_servers"),
+            "common config must not reintroduce CC Switch-managed MCP"
         );
     }
 
